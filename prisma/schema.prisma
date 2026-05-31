@@ -1,0 +1,333 @@
+// prisma/schema.prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// --- ENUMS ---
+enum UserRole {
+  CUSTOMER
+  PRODUCER
+  ADMIN
+}
+
+enum ProducerType {
+  TYPE_A
+  TYPE_B
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  SUSPENDED
+}
+
+enum OrderStatus {
+  PENDING
+  ACCEPTED
+  PROCESSING
+  SHIPPED
+  DELIVERED
+  CANCELLED
+  DISPUTED
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  REFUNDED
+  FAILED
+}
+
+enum PayoutStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum DisputeStatus {
+  OPEN
+  UNDER_REVIEW
+  RESOLVED
+  CLOSED
+}
+
+enum DeliveryMode {
+  SELF_DELIVERY
+  PLATFORM_MANAGED
+  PICKUP_ONLY
+}
+
+// --- MODELS ---
+model User {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email           String?   @unique  // جعلناه اختيارياً (?)
+  phone           String?   @unique  // أضفنا حقل الجوال
+  passwordHash    String?            // اختياري حالياً حتى نضع التشفير
+  fullName        String
+  role            UserRole  @default(CUSTOMER)
+  status          ApprovalStatus @default(PENDING)
+  isEmailVerified Boolean   @default(false)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // ... بقية العلاقات (profiles, orders, etc.) تبقى كما هي ...
+  customerProfile   CustomerProfile?
+  producerProfile   ProducerProfile?
+  adminProfile      AdminProfile?
+  sentMessages      Message[]      @relation("SentMessages")
+  receivedMessages  Message[]      @relation("ReceivedMessages")
+  reviews           Review[]
+  ordersAsCustomer  Order[]        @relation("CustomerOrders")
+  notifications     Notification[]
+
+  @@map("users")
+}
+
+model CustomerProfile {
+  id        String  @id @default(cuid())
+  userId    String  @unique
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  addresses Address[]
+
+  @@map("customer_profiles")
+}
+
+model ProducerProfile {
+  id              String         @id @default(cuid())
+  userId          String         @unique
+  user            User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  type            ProducerType
+  licenseDocUrl   String?
+  idDocUrl        String?
+  bankIbanHash    String?
+  bankName        String?
+  approvalStatus  ApprovalStatus @default(PENDING)
+  commissionRate  Decimal        @default(5.00) @db.Decimal(5,2)
+  deliveryMode    DeliveryMode   @default(SELF_DELIVERY)
+  deliveryRadius  Int?           @default(10)
+  deliveryFee     Decimal        @default(0.00) @db.Decimal(8,2)
+
+  pickupCity      String?
+  pickupDistrict  String?
+  pickupLatitude  Float?
+  pickupLongitude Float?
+
+  products        Product[]
+  orders          Order[]
+  payouts         Payout[]
+  reviewsReceived Review[]
+
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  @@map("producer_profiles")
+  @@index([approvalStatus])
+}
+
+model AdminProfile {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  permissions String[]
+
+  @@map("admin_profiles")
+}
+
+model Category {
+  id        String     @id @default(cuid())
+  name      String
+  slug      String     @unique
+  parentId  String?
+  parent    Category?  @relation("CategoryHierarchy", fields: [parentId], references: [id])
+  children  Category[] @relation("CategoryHierarchy")
+  products  Product[]
+
+  @@map("categories")
+}
+
+model Product {
+  id          String   @id @default(cuid())
+  producerId  String
+  producer    ProducerProfile @relation(fields: [producerId], references: [id])
+  categoryId  String
+  category    Category @relation(fields: [categoryId], references: [id])
+
+  title       String
+  description String?
+  price       Decimal  @db.Decimal(10,2)
+  stock       Int      @default(0)
+  images      String[]
+  isOrganic   Boolean  @default(false)
+  isSeasonal  Boolean  @default(false)
+  status      ApprovalStatus @default(PENDING)
+
+  orderItems  OrderItem[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("products")
+  @@index([producerId, status])
+}
+
+model Address {
+  id          String   @id @default(cuid())
+  customerId  String?
+  customer    CustomerProfile? @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  
+  city        String
+  district    String
+  street      String?
+  building    String?
+  latitude    Float
+  longitude   Float
+  isDefault   Boolean  @default(false)
+
+  orders      Order[]
+
+  @@map("addresses")
+}
+
+model Order {
+  id              String        @id @default(cuid())
+  customerId      String
+  customer        User          @relation("CustomerOrders", fields: [customerId], references: [id])
+  producerId      String
+  producer        ProducerProfile @relation(fields: [producerId], references: [id])
+  addressId       String
+  address         Address       @relation(fields: [addressId], references: [id])
+
+  status          OrderStatus   @default(PENDING)
+  subtotal        Decimal       @db.Decimal(10,2)
+  deliveryFee     Decimal       @db.Decimal(10,2)
+  vatAmount       Decimal       @default(0.00) @db.Decimal(10,2)
+  total           Decimal       @db.Decimal(10,2)
+  commission      Decimal       @db.Decimal(10,2)
+  netToProducer   Decimal       @db.Decimal(10,2)
+
+  paymentGatewayRef String?
+  zatcaInvoiceId    String?
+  paymentStatus     PaymentStatus @default(PENDING)
+
+  items             OrderItem[]
+  review            Review?
+  dispute           Dispute?
+  payoutAssignments PayoutAssignment[]
+
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  @@map("orders")
+  @@index([customerId, status])
+  @@index([producerId, status])
+}
+
+model OrderItem {
+  id              String  @id @default(cuid())
+  orderId         String
+  order           Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId       String
+  product         Product @relation(fields: [productId], references: [id])
+  quantity        Int
+  priceAtPurchase Decimal @db.Decimal(10,2)
+
+  @@map("order_items")
+  @@unique([orderId, productId])
+}
+
+model Payout {
+  id            String       @id @default(cuid())
+  producerId    String
+  producer      ProducerProfile @relation(fields: [producerId], references: [id])
+  
+  totalAmount   Decimal      @db.Decimal(10,2)
+  status        PayoutStatus @default(PENDING)
+  bankRef       String?
+  processedAt   DateTime?
+
+  assignments   PayoutAssignment[]
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  @@map("payouts")
+}
+
+model PayoutAssignment {
+  id        String  @id @default(cuid())
+  payoutId  String
+  orderId   String
+  payout    Payout  @relation(fields: [payoutId], references: [id])
+  order     Order   @relation(fields: [orderId], references: [id])
+  amount    Decimal @db.Decimal(10,2)
+
+  @@map("payout_assignments")
+  @@unique([payoutId, orderId])
+}
+
+model Review {
+  id          String   @id @default(cuid())
+  orderId     String   @unique
+  order       Order    @relation(fields: [orderId], references: [id])
+  customerId  String
+  customer    User     @relation(fields: [customerId], references: [id])
+  producerId  String
+  producer    ProducerProfile @relation(fields: [producerId], references: [id])
+
+  rating      Int
+  comment     String?
+  isVerified  Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  @@map("reviews")
+}
+
+model Message {
+  id          String   @id @default(cuid())
+  senderId    String
+  sender      User     @relation("SentMessages", fields: [senderId], references: [id], onDelete: Cascade)
+  receiverId  String
+  receiver    User     @relation("ReceivedMessages", fields: [receiverId], references: [id], onDelete: Cascade)
+
+  content     String
+  isFlagged   Boolean  @default(false)
+  flagReason  String?
+  createdAt   DateTime @default(now())
+
+  @@map("messages")
+}
+
+model Dispute {
+  id            String        @id @default(cuid())
+  orderId       String        @unique
+  order         Order         @relation(fields: [orderId], references: [id])
+  initiatedBy   String
+  reason        String
+  evidenceUrls  String[]
+  status        DisputeStatus @default(OPEN)
+  resolution    String?
+  resolvedAt    DateTime?
+
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@map("disputes")
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  message   String
+  type      String
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@map("notifications")
+}
